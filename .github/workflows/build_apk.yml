@@ -1,0 +1,110 @@
+name: ARES APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Kaynak kodu al
+        uses: actions/checkout@v4
+
+      - name: Java 17 kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK kur
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ""
+
+      - name: Android SDK paketlerini kur
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platform-tools"
+          sdkmanager --install "platforms;android-35"
+          sdkmanager --install "build-tools;35.0.0"
+          # llama_flutter_android / jni native derleme için CMake zorunlu
+          sdkmanager --install "cmake;3.22.1"
+          sdkmanager --install "ndk;27.0.12077973" || true
+          sdkmanager --install "ndk;28.2.13676358" || true
+          if [ ! -d "$ANDROID_SDK_ROOT/ndk/28.2.13676358" ]; then
+            rm -rf "$ANDROID_SDK_ROOT/ndk/28.2.13676358" || true
+            sdkmanager --install "ndk;28.2.13676358"
+          fi
+          if [ ! -d "$ANDROID_SDK_ROOT/ndk/27.0.12077973" ]; then
+            rm -rf "$ANDROID_SDK_ROOT/ndk/27.0.12077973" || true
+            sdkmanager --install "ndk;27.0.12077973"
+          fi
+          echo "=== NDK ==="
+          ls -la "$ANDROID_SDK_ROOT/ndk" || true
+          echo "=== CMake ==="
+          ls -la "$ANDROID_SDK_ROOT/cmake" || true
+
+      - name: Android lisanslarını kabul et
+        run: yes | sdkmanager --licenses || true
+
+      - name: Flutter kur
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter sürümünü kontrol et
+        run: flutter --version
+
+      - name: Bağımlılıkları yükle
+        run: flutter pub get
+
+      - name: Kod analizi
+        continue-on-error: true
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings > analiz_raporu.txt 2>&1
+
+      - name: Testler
+        continue-on-error: true
+        run: flutter test --no-pub > test_raporu.txt 2>&1
+
+      - name: Analiz ve test raporlarını yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analiz-ve-test-raporlari
+          path: |
+            analiz_raporu.txt
+            test_raporu.txt
+          if-no-files-found: ignore
+
+      - name: Gradle çalıştırma izni
+        run: chmod +x android/gradlew
+
+      - name: Release APK oluştur
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/28.2.13676358
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter build apk --release --android-skip-build-dependency-validation 2>&1 | tee build_raporu.txt
+
+      - name: Derleme raporunu yükle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: derleme-raporu
+          path: build_raporu.txt
+          if-no-files-found: ignore
+
+      - name: APK dosyasını yükle
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dest-os-ares-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
